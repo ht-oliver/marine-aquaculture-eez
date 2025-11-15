@@ -1,0 +1,38 @@
+---
+title: "Responses"
+format: html
+---
+
+```{r}
+#| message: false
+library(tidyverse)
+library(sf)
+library(terra)
+library(tmap)
+library(patchwork)
+
+```
+
+Read in data
+```{r}
+sst_dir <- here::here("data", "sst")
+sst <- list.files(sst_dir, pattern = glob2rx("*.tif$"), full.names = TRUE)
+sst_sort <- sst[
+  # Sort filepaths based on numeric suffix
+  order(
+    # Extract numeric suffix of filenames and convert to numeric
+    as.numeric(gsub(".*_(\\d+)\\.tif$", "\\1", sst))
+    )
+  ]
+sst_rast <- rast(sst_sort)
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
