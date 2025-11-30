@@ -1,0 +1,143 @@
+---
+title: ""Responses - 1"
+author: "Henry Oliver"
+format: html
+---
+
+
+### Prepare environment - load libraries
+```{r}
+#| message: false
+library(tidyverse)
+library(sf)
+library(terra)
+library(tmap)
+library(patchwork)
+library(tmap)
+```
+
+
+### Read in Data
+```{r}
+# Create path for sst data
+sst_dir <- here::here("data", "sst")
+# Read in data as a stack of rasters
+sst <- list.files(sst_dir, pattern = glob2rx("*.tif$"), full.names = TRUE)
+sst_sort <- sst[
+  # Sort filepaths based on numeric suffix
+  order(
+    # Extract numeric suffix of filenames and convert to numeric
+    as.numeric(gsub(".*_(\\d+)\\.tif$", "\\1", sst))
+    )
+  ]
+sst_rast <- rast(sst_sort)
+
+# Read in bathymetry raster
+bathymetry <- rast(here::here("data", "depth.tif"))
+
+# Read in EEZ shapefile
+eez <- st_read(here::here("data", "wc_regions_clean.shp"))
+```
+
+
+### Calculate mean surface temperature in degrees Celsius
+```{r}
+# Calculate the mean sea surface temperature, adjust from K to C
+mean_sst <- mean(sst_rast) - 273.15
+
+# Reproject sst to a CRS with meters instead of degrees, specify resolution
+sst_reprojected <- project(mean_sst, "EPSG:32611")
+
+# Check values
+sst_reprojected
+```
+
+
+### Adjust bathymetry data and combine with reprojected SST data
+```{r}
+
+bathymetry_reprojected <-  project(bathymetry, sst_reprojected) %>% # Reproject
+  resample(sst_reprojected) %>%  # Resample
+  crop(sst_reprojected) # Crop to sst extent
+
+```
+
+### Create matrices for relcassification
+
+We want to isolate the temperatures and ocean depths that have been identified as suitable aquaculture habitats for our targeted species. In order to do this, we must re-classify our temperature and depth data to add an indicator (1 or 0) or whether a position on the raster is viable (1) or non-viable (0) for aquaculture of the targeted species. Once we've created re-classified sst and depth rasters, we'll combine them into a single suitable-habitat raster.
+```{r}
+# Create a matrix to reclassify SST
+sst_matrix <- matrix(c(
+            -Inf, 11, 0,
+            11, 30, 1,
+            30, Inf, 0),
+ncol = 3,
+byrow = TRUE
+)
+# Matrix for depth
+depth_matrix <- matrix(c(
+            -Inf, -70, 0,
+            -70, 0, 1,
+            0, Inf, 0),
+ncol = 3,
+byrow = TRUE
+)
+```
+
+### Reclassify
+```{r}
+# Reclassify
+bath_mask <- classify(bathymetry_reprojected, depth_matrix)
+sst_mask <- classify(sst_reprojected, sst_matrix)
+
+# Multiply, return raster where both bath and sst have a value of 1
+oyster_mask <- bath_mask*sst_mask
+```
+
+### Prepare EEZ data
+```{r}
+# Reproject
+eez_proj <- st_transform(eez, crs(oyster_mask))
+
+# Clip oyster habitat to eez extent with mask
+oyster_eez <- mask(oyster_mask, vect(eez_proj))
+```
+
+### Sum overlapping EEZ and habitat pixel area, print result
+```{r}
+# Total area of suitable habitat in km^2
+total_area_km2 <- sum(values(oyster_eez) == 1, na.rm = TRUE) * prod(res(oyster_eez)) / 1e6
+
+print(paste("Oyster suitable habitat is", round(total_area_km2), "km^2"))
+
+```
+
+
+### Create map
+```{r}
+tm_shape(oyster_eez) +
+  tm_raster(
+    col.scale = tm_scale_categorical(
+      values = c("0" = "lightgray", "1" = "darkgreen"),
+      labels = c("Not Suitable", "Suitable")
+    ),
+    col.legend = tm_legend(title = "Oyster Habitat")
+  ) +
+  tm_scalebar(position = c("left", "bottom")) +
+  tm_compass(position = c(0.85, 0.20)) +
+  tm_layout(
+    main.title = "Suitable Habitat for Oyster Farming",
+    frame = FALSE
+  )
+
+```
+
+
+### Function for Chosen Species
+
+```{r}
+
+
+
+```
+
