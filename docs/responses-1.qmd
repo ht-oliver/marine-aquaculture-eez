@@ -1,9 +1,12 @@
 ---
-title: ""Responses - 1"
+title: "Responses - 1"
 author: "Henry Oliver"
 format: html
 ---
 
+### Purpose
+
+The purpose of this analysis is to provide maps and statistics that summarize the total area of suitable aquaculture habitat for various species of farmed aquatic species. First, the extent of aquaculture habitat for oysters in 5 west-coast economic zones will be determined. Then, I provide a function which allows a user to input depth and temperature ranges for a target species, and yield a similar map and table which summarizes approximate viable aquaculture area for each economic zone.
 
 ### Prepare environment - load libraries
 ```{r}
@@ -13,12 +16,12 @@ library(sf)
 library(terra)
 library(tmap)
 library(patchwork)
-library(tmap)
 ```
 
 
 ### Read in Data
 ```{r}
+#| message: false
 # Create path for sst data
 sst_dir <- here::here("data", "sst")
 # Read in data as a stack of rasters
@@ -36,7 +39,7 @@ sst_rast <- rast(sst_sort)
 bathymetry <- rast(here::here("data", "depth.tif"))
 
 # Read in EEZ shapefile
-eez <- st_read(here::here("data", "wc_regions_clean.shp"))
+eez <- st_read(here::here("data", "wc_regions_clean.shp"), quiet = TRUE)
 ```
 
 
@@ -90,7 +93,7 @@ byrow = TRUE
 bath_mask <- classify(bathymetry_reprojected, depth_matrix)
 sst_mask <- classify(sst_reprojected, sst_matrix)
 
-# Multiply, return raster where both bath and sst have a value of 1
+# Multiply, return raster where both bathymetry and sst masks have a value of 1
 oyster_mask <- bath_mask*sst_mask
 ```
 
@@ -99,22 +102,32 @@ oyster_mask <- bath_mask*sst_mask
 # Reproject
 eez_proj <- st_transform(eez, crs(oyster_mask))
 
+# Convert to SpatVector
+eez_vect <- vect(eez_proj)
+
 # Clip oyster habitat to eez extent with mask
-oyster_eez <- mask(oyster_mask, vect(eez_proj))
+oyster_eez <- mask(oyster_mask, eez_proj)
 ```
 
 ### Sum overlapping EEZ and habitat pixel area, print result
 ```{r}
-# Total area of suitable habitat in km^2
-total_area_km2 <- sum(values(oyster_eez) == 1, na.rm = TRUE) * prod(res(oyster_eez)) / 1e6
+# Get cellsizes in m^2
+oyster_cell_sizes <- cellSize(oyster_eez, unit = "m")
+
+# Get area from cell sizes
+oyster_area <- oyster_eez*oyster_cell_sizes
+
+# Get cellsizes of entire raster in km^2
+total_area_km2 <- global(oyster_area, fun = "sum", na.rm = TRUE)[1,1] / 1e6
 
 print(paste("Oyster suitable habitat is", round(total_area_km2), "km^2"))
 
 ```
+### Create map showing suitable area to check our area summary function
 
-
-### Create map
 ```{r}
+#| message: false
+habitat_map <-
 tm_shape(oyster_eez) +
   tm_raster(
     col.scale = tm_scale_categorical(
@@ -124,20 +137,160 @@ tm_shape(oyster_eez) +
     col.legend = tm_legend(title = "Oyster Habitat")
   ) +
   tm_scalebar(position = c("left", "bottom")) +
-  tm_compass(position = c(0.85, 0.20)) +
+  tm_compass(position = c(0.9, 0.20)) +
   tm_layout(
     main.title = "Suitable Habitat for Oyster Farming",
     frame = FALSE
   )
 
+habitat_map
 ```
+
+
+### Create map and table of suitable habitat per eez zone
+```{r}
+#| message: False
+
+# Suitable habitat per zone in km^2
+zone_area <- zonal(oyster_area, eez_vect, fun = "sum", na.rm = TRUE) / 1e6
+
+# Add column to eez_proj with the suitable areas from zone_area
+eez_suitable_area <- eez_proj %>% 
+  mutate(suitable_area = zone_area$depth)
+
+
+eez_zones_map <-
+  tm_shape(eez_suitable_area) +
+  tm_polygons(
+    fill = 'suitable_area',
+    fill.scale = tm_scale_continuous(values = "viridis"),
+    fill.legend = tm_legend(title = "Suitable Area (km^2)")
+  ) +
+  tm_compass(position = c(0, 0.2)) +
+  tm_scalebar(position = c(0, 0.075)) +
+  tm_title(text = "Suitable Habitat by Zone")
+
+eez_zones_map
+
+```
+```{r}
+# Create table
+eez_zones_table <-
+st_drop_geometry(eez_suitable_area) %>% 
+  select(c('rgn', 'suitable_area'))
+
+print(eez_zones_table)
+
+```
+### Interpretation of Figures
+
+The map and table above show that Central and Southern California have the most suitable area for Oyster aquaculture, whereas Northern California and Oregon have notably lower suitable area for Oyster aquaculture.  This figure would suggest that aquaculture efforts for oysters would be best suited for the southern portion of the American West Coast.
 
 
 ### Function for Chosen Species
+We want a function that takes temperature range and depth range for a target species, and produces similar figures to those generated above for Oysters. 
 
 ```{r}
+#| message: false
+# Create function with inputs sst min/max, depth min/max and species name
+aquaculture_range <- function(sst_min, sst_max, depth_min, depth_max, species_name = "Species") {
 
+# Calculate the mean sea surface temperature
+mean_sst <- mean(sst_rast)
 
+#Adjust from Kelvin to Celsius
+adjusted_mean_sst <- mean_sst - 273.15
+
+# Reproject sst to a CRS with meters instead of degrees
+sst_reprojected <- project(adjusted_mean_sst, "EPSG:32611")
+
+  # Create a matrix to reclassify SST
+sst_matrix <- matrix(c(
+            -Inf, sst_min, 0,
+            sst_min, sst_max, 1,
+            sst_max, Inf, 0),
+ncol = 3,
+byrow = TRUE
+)
+# Matrix for depth
+depth_matrix <- matrix(c(
+            -Inf, depth_min, 0,
+            depth_min, depth_max, 1,
+            depth_max, Inf, 0),
+ncol = 3,
+byrow = TRUE
+)
+
+bathymetry_reprojected <-  project(bathymetry, sst_reprojected) %>% # Reproject
+  resample(sst_reprojected) %>%  # Resample
+  crop(sst_reprojected) # Crop to sst extent
+  
+# Reclassify
+bath_mask <- classify(bathymetry_reprojected, depth_matrix)
+sst_mask <- classify(sst_reprojected, sst_matrix)
+
+# Multiply, return raster where both bath and sst have a value of 1
+species_mask <- bath_mask*sst_mask
+
+# Reproject
+eez_proj <- st_transform(eez, crs(species_mask))
+
+# Clip species habitat to eez extent with mask
+species_eez <- mask(species_mask, vect(eez_proj))
+
+# Get cellsizes in m^2
+species_cell_sizes <- cellSize(species_eez, unit = "m")
+
+# Get area from cell sizes
+species_area <- species_eez*species_cell_sizes
+
+# Suitable habitat per zone in km^2
+zone_area <- zonal(species_area, eez_vect, fun = "sum", na.rm = TRUE) / 1e6
+
+# Add column to eez_proj with the suitable areas from zone_area
+eez_suitable_area <- eez_proj %>% 
+  mutate(suitable_area = zone_area$depth)
+
+eez_zones_map <-
+  tm_shape(eez_suitable_area) +
+  tm_polygons(
+    fill = 'suitable_area',
+    fill.scale = tm_scale_continuous(values = "viridis"),
+    fill.legend = tm_legend(title = "Suitable Area (km^2)")
+  ) +
+  tm_compass(position = c(0, 0.2)) +
+  tm_scalebar(position = c(0, 0.075)) +
+  tm_title(text = paste("Suitable Habitat for", species_name, "by Zone"))
+
+eez_zones_table <-
+st_drop_geometry(eez_suitable_area) %>% 
+  select(c('rgn', 'suitable_area'))
+
+  return(list(map = eez_zones_map, table = eez_zones_table))
+}
+
+# Check Function
+aquaculture_range(8, 23, -30, -25, species_name = "Argopecten ventricosus)
 
 ```
+
+### Interpretation of Figure for *Argopecten ventricosus*
+
+The figure and table generated show that there is significantly less suitable aquaculture habitat for Giant Kelp *Argopecten ventricosus* than there is for Oysters on the West Coast of the US. Furthermore, water off the coast of Washington state contains roughly 5x more suitable habitat than any other zone. This is likely because on average water temperatures are lowest in the northern part of the state, and Giant kelp prefers lower average SSTs than our previously analyzed species. 
+
+
+### References
+
+Hall, S. J., Delaporte, A., Phillips, M. J., Beveridge, M., & O’Keefe, M. (2011). 
+*Blue Frontiers: Managing the Environmental Costs of Aquaculture*. 
+The WorldFish Center, Penang, Malaysia.
+
+Gentry, R. R., Froehlich, H. E., Grimm, D., Kareiva, P., Parke, M., Rust, M., 
+Gaines, S. D., & Halpern, B. S. (2017). Mapping the global potential for marine aquaculture. 
+*Nature Ecology & Evolution*, 1, 1317–1324.
+
+GEBCO Compilation Group (2022). *GEBCO_2022 Grid* 
+(doi:10.5285/e0f0bb80-ab44-2739-e053-6c86abc0289c).
+
+
 

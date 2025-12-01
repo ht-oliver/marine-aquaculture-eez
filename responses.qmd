@@ -15,7 +15,9 @@ library(patchwork)
 
 Read in data
 ```{r}
+# Create path for sst data
 sst_dir <- here::here("data", "sst")
+# Read in data as a stack of rasters
 sst <- list.files(sst_dir, pattern = glob2rx("*.tif$"), full.names = TRUE)
 sst_sort <- sst[
   # Sort filepaths based on numeric suffix
@@ -26,13 +28,96 @@ sst_sort <- sst[
   ]
 sst_rast <- rast(sst_sort)
 
+# Read in bathymetry raster
+bathymetry <- rast(here::here("data", "depth.tif"))
+
+# Read in EEZ shapefile
+eez <- st_read(here::here("data", "wc_regions_clean.shp"))
+
 ```
 
 ```{r}
+# Calculate the mean sea surface temperature
+mean_sst <- mean(sst_rast)
+
+#Adjust from Kelvin to Celsius
+adjusted_mean_sst <- mean_sst - 273.15
+
+# Reproject sst to a CRS with meters instead of degrees
+sst_reprojected <- project(adjusted_mean_sst, "EPSG:32611")
+
+# Check values
+sst_reprojected
 
 ```
 
 ```{r}
+# Reproject, resample, and crop bathymetry data
+bathymetry <- project(bathymetry, sst_reprojected) %>% 
+  resample(sst_reprojected) %>% 
+  crop(sst_reprojected)
+
+# Resample
+bathymetry_res <- resample(bathymetry_proj, sst_reprojected)
+
+# Crop bathymetry data to temperature range
+bathymetry_crop <- crop(bathymetry_res, sst_reprojected)
+```
+
+
+### Reclassify
+
+We want to isolate the temperatures and ocean depths that have been identified as suitable aquaculture habitats for our targeted species. In order to do this, we must re-classify our temperature and depth data to add an indicator (1 or 0) or whether a position on the raster is viable (1) or non-viable (0) for aquaculture of the targeted species. Once we've created re-classified sst and depth rasters, we'll combine them into a single suitable-habitat raster.
+
+```{r}
+# Create a matrix to reclassify SST
+sst_matrix <- matrix(c(
+            -Inf, 11, 0,
+            11, 30, 1,
+            30, Inf, 0),
+ncol = 3,
+byrow = TRUE
+)
+
+# Matrix for depth
+depth_matrix <- matrix(c(
+            -Inf, -70, 0,
+            -70, 0, 1,
+            0, Inf, 0),
+ncol = 3,
+byrow = TRUE
+)
+
+# Reclassify
+bath_mask <- classify(bathymetry_crop, depth_matrix)
+sst_mask <- classify(sst_reprojected, sst_matrix)
+
+
+# Multiply, return raster where both bath and sst have a value of 1
+oyster_mask <- bath_mask*sst_mask
+
+```
+
+
+```{r}
+# Turn eez data into simple feature
+eez_sf <- st_as_sf(eez)
+
+# Reproject
+eez_proj <- st_transform(eez_sf, crs(oyster_mask))
+
+# Clip oyster habitat to eez extent
+oyster_eez <- crop(oyster_mask, eez_proj)
+
+```
+
+
+```{r}
+# Zonal algebra to extract cell count
+oyster_suitable_area <- expanse(oyster_eez == 1, unit = "m")
+
+print(paste("Oyster suitable habitat is", round(oyster_suitable_area[1,2] / 1e6), "km^2"))
+
 
 ```
 
