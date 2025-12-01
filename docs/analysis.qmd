@@ -1,12 +1,12 @@
 ---
-title: "Responses - 1"
+title: "Analysis"
 author: "Henry Oliver"
+date: November 30, 2025
 format: html
 ---
 
 ### Purpose
-
-The purpose of this analysis is to provide maps and statistics that summarize the total area of suitable aquaculture habitat for various species of farmed aquatic species. First, the extent of aquaculture habitat for oysters in 5 west-coast economic zones will be determined. Then, I provide a function which allows a user to input depth and temperature ranges for a target species, and yield a similar map and table which summarizes approximate viable aquaculture area for each economic zone.
+The purpose of this analysis is to provide maps and statistics that summarize the total area of suitable aquaculture habitat for various species of farmed aquatic species. First, the extent of aquaculture habitat for oysters in 5 west-coast economic zones will be determined. Then, I employ a function which allows a user to input ranges for depth in meters and temperature in degrees Celsius for a target species, and yield a similar map and table which summarizes approximate viable aquaculture area for each economic zone.
 
 ### Prepare environment - load libraries
 ```{r}
@@ -16,6 +16,7 @@ library(sf)
 library(terra)
 library(tmap)
 library(patchwork)
+library(kableExtra)
 ```
 
 
@@ -173,13 +174,20 @@ eez_zones_map <-
 eez_zones_map
 
 ```
-```{r}
+
+```{r results ='asis'}
 # Create table
 eez_zones_table <-
 st_drop_geometry(eez_suitable_area) %>% 
-  select(c('rgn', 'suitable_area'))
+  select(c('rgn', 'suitable_area')) %>% 
+  kable(
+    format = "html",
+    col.names = c("Region", "Suitable Area (sq km)"),
+    caption = "Suitable Area by EEZ Region for American cupped oyster",
+    digits = 2
+  )
 
-print(eez_zones_table)
+eez_zones_table
 
 ```
 ### Interpretation of Figures
@@ -187,96 +195,22 @@ print(eez_zones_table)
 The map and table above show that Central and Southern California have the most suitable area for Oyster aquaculture, whereas Northern California and Oregon have notably lower suitable area for Oyster aquaculture.  This figure would suggest that aquaculture efforts for oysters would be best suited for the southern portion of the American West Coast.
 
 
-### Function for Chosen Species
-We want a function that takes temperature range and depth range for a target species, and produces similar figures to those generated above for Oysters. 
+### Function for Chosen Species - Pacific calico scallop **Argopecten ventricosus**
+Here we will employ our 'aquaculture_range' function that takes temperature range and depth range for a target species, and produces similar figures to those generated above for Oysters. 
 
 ```{r}
 #| message: false
-# Create function with inputs sst min/max, depth min/max and species name
-aquaculture_range <- function(sst_min, sst_max, depth_min, depth_max, species_name = "Species") {
+# Source function
+source(here::here("functions", "aquaculture_habitat_function.R"))
 
-# Calculate the mean sea surface temperature
-mean_sst <- mean(sst_rast)
-
-#Adjust from Kelvin to Celsius
-adjusted_mean_sst <- mean_sst - 273.15
-
-# Reproject sst to a CRS with meters instead of degrees
-sst_reprojected <- project(adjusted_mean_sst, "EPSG:32611")
-
-  # Create a matrix to reclassify SST
-sst_matrix <- matrix(c(
-            -Inf, sst_min, 0,
-            sst_min, sst_max, 1,
-            sst_max, Inf, 0),
-ncol = 3,
-byrow = TRUE
-)
-# Matrix for depth
-depth_matrix <- matrix(c(
-            -Inf, depth_min, 0,
-            depth_min, depth_max, 1,
-            depth_max, Inf, 0),
-ncol = 3,
-byrow = TRUE
-)
-
-bathymetry_reprojected <-  project(bathymetry, sst_reprojected) %>% # Reproject
-  resample(sst_reprojected) %>%  # Resample
-  crop(sst_reprojected) # Crop to sst extent
-  
-# Reclassify
-bath_mask <- classify(bathymetry_reprojected, depth_matrix)
-sst_mask <- classify(sst_reprojected, sst_matrix)
-
-# Multiply, return raster where both bath and sst have a value of 1
-species_mask <- bath_mask*sst_mask
-
-# Reproject
-eez_proj <- st_transform(eez, crs(species_mask))
-
-# Clip species habitat to eez extent with mask
-species_eez <- mask(species_mask, vect(eez_proj))
-
-# Get cellsizes in m^2
-species_cell_sizes <- cellSize(species_eez, unit = "m")
-
-# Get area from cell sizes
-species_area <- species_eez*species_cell_sizes
-
-# Suitable habitat per zone in km^2
-zone_area <- zonal(species_area, eez_vect, fun = "sum", na.rm = TRUE) / 1e6
-
-# Add column to eez_proj with the suitable areas from zone_area
-eez_suitable_area <- eez_proj %>% 
-  mutate(suitable_area = zone_area$depth)
-
-eez_zones_map <-
-  tm_shape(eez_suitable_area) +
-  tm_polygons(
-    fill = 'suitable_area',
-    fill.scale = tm_scale_continuous(values = "viridis"),
-    fill.legend = tm_legend(title = "Suitable Area (km^2)")
-  ) +
-  tm_compass(position = c(0, 0.2)) +
-  tm_scalebar(position = c(0, 0.075)) +
-  tm_title(text = paste("Suitable Habitat for", species_name, "by Zone"))
-
-eez_zones_table <-
-st_drop_geometry(eez_suitable_area) %>% 
-  select(c('rgn', 'suitable_area'))
-
-  return(list(map = eez_zones_map, table = eez_zones_table))
-}
-
-# Check Function
-aquaculture_range(8, 23, -30, -25, species_name = "Argopecten ventricosus)
+# Check Function for Pacific calico scallop
+aquaculture_range(11, 28.5, -180, 0, species_name = "Argopecten ventricosus")
 
 ```
 
 ### Interpretation of Figure for *Argopecten ventricosus*
 
-The figure and table generated show that there is significantly less suitable aquaculture habitat for Giant Kelp *Argopecten ventricosus* than there is for Oysters on the West Coast of the US. Furthermore, water off the coast of Washington state contains roughly 5x more suitable habitat than any other zone. This is likely because on average water temperatures are lowest in the northern part of the state, and Giant kelp prefers lower average SSTs than our previously analyzed species. 
+The figure and table generated show that there is significantly more suitable aquaculture habitat for Pacific calico scallops *Argopecten ventricosus* than there is for oysters on the West Coast of the US. This is likely because the scallops survivable depth range is more than double that of oysters. Furthermore, water off the coast of Oregon state contains nearly 10x more suitable habitat than the zone directly south, Northern California. 
 
 
 ### References
@@ -289,8 +223,9 @@ Gentry, R. R., Froehlich, H. E., Grimm, D., Kareiva, P., Parke, M., Rust, M.,
 Gaines, S. D., & Halpern, B. S. (2017). Mapping the global potential for marine aquaculture. 
 *Nature Ecology & Evolution*, 1, 1317–1324.
 
+SeaLifeBase. “United States (contiguous states) – Species summary for Argopecten ventricosus.” Accessed November 30, 2025. https://www.sealifebase.ca/country/CountrySpeciesSummary.php?Country=United+States+(contiguous+states)&genusname=Argopecten&speciesname=ventricosus
+
 GEBCO Compilation Group (2022). *GEBCO_2022 Grid* 
 (doi:10.5285/e0f0bb80-ab44-2739-e053-6c86abc0289c).
-
 
 
