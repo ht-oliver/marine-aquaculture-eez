@@ -1,0 +1,274 @@
+---
+title: "Aquaculture EEZs on US West Coast"
+author: "Henry Oliver"
+date: November 30, 2025
+format: html
+  code-fold: hide
+---
+
+## Background
+
+Marine aquaculture is a vital component of coastal economies, and a pivotal topic in global sustainability. Finding responsible, ecologically and economically friendly ways to put fish and shellfish on the world's plate is proving to be a key element in a sustainable future. Aquaculture accounts for more than 50 percent of all seafood produced for human consumption globally [1]. Currently, the US Pacific Coast produces 38% percent of total marine and freshwater aquaculture in the US ((NOTE: look for mass #).
+
+###### [[IMAGE OF NOAA AQUACULTURE STATS]]
+
+With increasing populations and decreasing natural resources, it's important that we preserve the areas of our coastline that are viable for key-species aquaculture. The analysis in this post seeks to provide some insight on that process
+
+###### [[IMAGE OF TASTY BIVALVE]]
+
+## Purpose and Workflow
+The purpose of this analysis is to provide maps and statistics that summarize the total area of suitable aquaculture habitat for various species of farmed aquatic species. First, the extent of aquaculture habitat for oysters in 5 west-coast economic zones will be determined. Then, I employ a function which allows a user to input ranges for depth in meters and temperature in degrees Celsius for a target species, and yield a similar map and table which summarizes approximate viable aquaculture area for each economic zone.
+
+Each section below shows the necessary code (in R Studio) to produce the results visualized at the end of this analysis. Click the arrows to expand and view the code within each chunk
+
+
+##### Prepare environment - load libraries
+```{r}
+#| code_folding: hide 
+#| message: false
+library(tidyverse)
+library(sf)
+library(terra)
+library(tmap)
+library(patchwork)
+library(kableExtra)
+```
+
+
+### Criteria for Aquaculture Viability
+
+For this analysis we're looking at two key criteria that will determine the viability aquaculture for a given species in a given region. Ocean depth, and Temperature in degrees Celsius. In order to model this information I use Ocean Sea Surface Temperature (SST) raster data made available by GEBCO Compilation Group[2], and bathymetry (ocean depth) raster data also provided by GEBCO[2] (((NOTE: CONFIRM))). For the SST data, I model the 5-year average of SSTs off the US West Coast from 2008-2012. Figure 1 below shows SST values for the year of 2008 in degrees Kelvin. Figure 2 shows bathymetry.
+```{r}
+#| message: false
+# Create path for sst data
+sst_dir <- here::here("data", "sst")
+# Read in data as a stack of rasters
+sst <- list.files(sst_dir, pattern = glob2rx("*.tif$"), full.names = TRUE)
+sst_sort <- sst[
+  # Sort filepaths based on numeric suffix
+  order(
+    # Extract numeric suffix of filenames and convert to numeric
+    as.numeric(gsub(".*_(\\d+)\\.tif$", "\\1", sst))
+    )
+  ]
+sst_rast <- rast(sst_sort)
+
+# Read in bathymetry raster
+bathymetry <- rast(here::here("data", "depth.tif"))
+
+# Read in EEZ shapefile
+eez <- st_read(here::here("data", "wc_regions_clean.shp"), quiet = TRUE)
+```
+
+```{r}
+tm_shape(sst_rast[[1]])+
+  tm_raster()
+```
+
+```{r}
+tm_shape(bathymetry) +
+  tm_raster()
+```
+
+In order to quantify the regional viability of aquaculture across the Pacific Coast the coastline is broken up into five Exclusive Economic Zones (EEZs), Pictured below.
+
+```{r}
+tm_shape(eez) +
+  tm_borders()
+```
+
+### Data Cleaning
+
+In order for the SST and bathymetry data to be useful in conjunction with the shapes of our EEZs, several modifications are necessary. We need to make sure everything is in relevant units, and that all of our *Coordinate Reference Systems* match up. A coordinate reference system (CRS) defines how the two- or three-dimensional positions in a dataset correspond to real locations on Earth by specifying the underlying Earth model, units, and mathematical framework for positioning. It provides the essential rules that allow spatial data from different sources to be compared, aligned, and analyzed consistently.
+
+
+##### Calculate mean surface temperature in degrees Celsius
+```{r}
+# Calculate the mean sea surface temperature, adjust from K to C
+mean_sst <- mean(sst_rast) - 273.15
+
+# Reproject sst to a CRS with meters instead of degrees, specify resolution
+sst_reprojected <- project(mean_sst, "EPSG:32611")
+
+# Check values
+sst_reprojected
+```
+
+
+##### Adjust bathymetry data and combine with reprojected SST data
+```{r}
+
+bathymetry_reprojected <-  project(bathymetry, sst_reprojected) %>% # Reproject
+  resample(sst_reprojected) %>%  # Resample
+  crop(sst_reprojected) # Crop to sst extent
+
+```
+
+
+### Create matrices for relcassification
+We want to isolate the temperatures and ocean depths that have been identified as suitable aquaculture habitats for our targeted species. In order to do this, we must re-classify our temperature and depth data to add an indicator (1 or 0) or whether a position on the raster is viable (1) or non-viable (0) for aquaculture of the targeted species. Once we've created re-classified sst and depth rasters, we'll combine them into a single suitable-habitat raster.
+
+```{r}
+# Create a matrix to reclassify SST
+sst_matrix <- matrix(c(
+            -Inf, 11, 0,
+            11, 30, 1,
+            30, Inf, 0),
+ncol = 3,
+byrow = TRUE
+)
+# Matrix for depth
+depth_matrix <- matrix(c(
+            -Inf, -70, 0,
+            -70, 0, 1,
+            0, Inf, 0),
+ncol = 3,
+byrow = TRUE
+)
+```
+
+### Reclassify
+```{r}
+# Reclassify
+bath_mask <- classify(bathymetry_reprojected, depth_matrix)
+sst_mask <- classify(sst_reprojected, sst_matrix)
+
+# Multiply, return raster where both bathymetry and sst masks have a value of 1
+oyster_mask <- bath_mask*sst_mask
+```
+
+### Prepare EEZ data
+```{r}
+# Reproject
+eez_proj <- st_transform(eez, crs(oyster_mask))
+
+# Convert to SpatVector
+eez_vect <- vect(eez_proj)
+
+# Clip oyster habitat to eez extent with mask
+oyster_eez <- mask(oyster_mask, eez_proj)
+```
+
+### Sum overlapping EEZ and habitat pixel area, print result
+```{r}
+# Get cellsizes in m^2
+oyster_cell_sizes <- cellSize(oyster_eez, unit = "m")
+
+# Get area from cell sizes
+oyster_area <- oyster_eez*oyster_cell_sizes
+
+# Get cellsizes of entire raster in km^2
+total_area_km2 <- global(oyster_area, fun = "sum", na.rm = TRUE)[1,1] / 1e6
+
+print(paste("Oyster suitable habitat is", round(total_area_km2), "km^2"))
+
+```
+### Create map showing suitable area to check our area summary function
+
+```{r}
+#| message: false
+habitat_map <-
+tm_shape(oyster_eez) +
+  tm_raster(
+    col.scale = tm_scale_categorical(
+      values = c("0" = "lightgray", "1" = "darkgreen"),
+      labels = c("Not Suitable", "Suitable")
+    ),
+    col.legend = tm_legend(title = "Oyster Habitat")
+  ) +
+  tm_scalebar(position = c("left", "bottom")) +
+  tm_compass(position = c(0.9, 0.20)) +
+  tm_layout(
+    main.title = "Suitable Habitat for Oyster Farming",
+    frame = FALSE
+  )
+
+habitat_map
+```
+
+
+### Create map and table of suitable habitat per eez zone
+```{r}
+#| message: False
+
+# Suitable habitat per zone in km^2
+zone_area <- zonal(oyster_area, eez_vect, fun = "sum", na.rm = TRUE) / 1e6
+
+# Add column to eez_proj with the suitable areas from zone_area
+eez_suitable_area <- eez_proj %>% 
+  mutate(suitable_area = zone_area$depth)
+
+
+eez_zones_map <-
+  tm_shape(eez_suitable_area) +
+  tm_polygons(
+    fill = 'suitable_area',
+    fill.scale = tm_scale_continuous(values = "viridis"),
+    fill.legend = tm_legend(title = "Suitable Area (km^2)")
+  ) +
+  tm_compass(position = c(0, 0.2)) +
+  tm_scalebar(position = c(0, 0.075)) +
+  tm_title(text = "Suitable Habitat by Zone")
+
+eez_zones_map
+
+```
+
+```{r results ='asis'}
+# Create table
+eez_zones_table <-
+st_drop_geometry(eez_suitable_area) %>% 
+  select(c('rgn', 'suitable_area')) %>% 
+  kable(
+    format = "html",
+    col.names = c("Region", "Suitable Area (sq km)"),
+    caption = "Suitable Area by EEZ Region for American cupped oyster",
+    digits = 2
+  )
+
+eez_zones_table
+
+```
+### Interpretation of Figures
+
+The map and table above show that Central and Southern California have the most suitable area for Oyster aquaculture, whereas Northern California and Oregon have notably lower suitable area for Oyster aquaculture.  This figure would suggest that aquaculture efforts for oysters would be best suited for the southern portion of the American West Coast.
+
+
+### Function for Chosen Species - Pacific calico scallop **Argopecten ventricosus**
+Here we will employ our 'aquaculture_range' function that takes temperature range and depth range for a target species, and produces similar figures to those generated above for Oysters. This function performs the following 
+
+```{r}
+#| message: false
+# Source function
+source(here::here("functions", "aquaculture_habitat_function.R"))
+
+# Check Function for Pacific calico scallop
+aquaculture_range(11, 28.5, -180, 0, species_name = "Argopecten ventricosus")
+
+```
+
+### Interpretation of Figure for *Argopecten ventricosus*
+
+The figure and table generated show that there is significantly more suitable aquaculture habitat for Pacific calico scallops *Argopecten ventricosus* than there is for oysters on the West Coast of the US. This is likely because the scallops survivable depth range is more than double that of oysters. Furthermore, water off the coast of Oregon state contains nearly 10x more suitable habitat than the zone directly south, Northern California. 
+
+
+### References
+
+[1]https://www.fisheries.noaa.gov/national/aquaculture/us-aquaculture
+
+[2]GEBCO Compilation Group (2022). *GEBCO_2022 Grid* 
+(doi:10.5285/e0f0bb80-ab44-2739-e053-6c86abc0289c).
+
+
+Hall, S. J., Delaporte, A., Phillips, M. J., Beveridge, M., & O’Keefe, M. (2011). 
+*Blue Frontiers: Managing the Environmental Costs of Aquaculture*. 
+The WorldFish Center, Penang, Malaysia.
+
+Gentry, R. R., Froehlich, H. E., Grimm, D., Kareiva, P., Parke, M., Rust, M., 
+Gaines, S. D., & Halpern, B. S. (2017). Mapping the global potential for marine aquaculture. 
+*Nature Ecology & Evolution*, 1, 1317–1324.
+
+SeaLifeBase. “United States (contiguous states) – Species summary for Argopecten ventricosus.” Accessed November 30, 2025. https://www.sealifebase.ca/country/CountrySpeciesSummary.php?Country=United+States+(contiguous+states)&genusname=Argopecten&speciesname=ventricosus
+
+
+
