@@ -5,6 +5,9 @@ date: "December 6, 2025"
 format: 
   html:
     code-fold: true
+    standalone: true
+    toc: true
+    embed-resources: true
 ---
 
 ## Background
